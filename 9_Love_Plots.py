@@ -47,7 +47,6 @@ def load_trinetx_baseline(uploaded_file) -> pd.DataFrame:
         data_str = "\n".join(lines[header_idx:])
         df = pd.read_csv(StringIO(data_str))
     else:
-        # Fallback: assume the file is a straightforward CSV
         df = pd.read_csv(StringIO(text))
 
     return df
@@ -83,17 +82,14 @@ def prepare_love_data(
     Each row corresponds to a covariate (or covariate-category level),
     with columns: label, <before_col>, <after_col>, abs_before, abs_after
     """
-    # Keep rows that have an SMD in at least one of the two columns
     mask = df[before_col].notna() | df[after_col].notna()
     df = df.loc[mask].copy()
 
-    # Base label: characteristic name
     if "Characteristic Name" not in df.columns:
         raise ValueError("Expected a 'Characteristic Name' column in the baseline table.")
 
     df["label"] = df["Characteristic Name"].fillna("").astype(str)
 
-    # Optionally augment with category levels
     if include_categories and "Category" in df.columns:
         cat = df["Category"].fillna("").astype(str)
         df["label"] = np.where(
@@ -102,7 +98,6 @@ def prepare_love_data(
             df["label"],
         )
 
-    # Numeric SMDs + absolute values
     df[before_col] = pd.to_numeric(df[before_col], errors="coerce")
     df[after_col] = pd.to_numeric(df[after_col], errors="coerce")
 
@@ -195,11 +190,9 @@ def make_love_plot(
     else:
         is_header = np.zeros(len(love_df), dtype=bool)
 
-    # Series to numpy for masking
     x_before = pd.to_numeric(love_df[before_col], errors="coerce").to_numpy()
     x_after = pd.to_numeric(love_df[after_col], errors="coerce").to_numpy()
 
-    # Plot only non-header rows and non-missing SMDs
     mask_before = (~is_header) & ~np.isnan(x_before)
     mask_after = (~is_header) & ~np.isnan(x_after)
 
@@ -218,13 +211,11 @@ def make_love_plot(
         color=after_color,
     )
 
-    # Vertical reference lines
     ax.axvline(0, linestyle="-", linewidth=1)
     for thr in [threshold, 2 * threshold]:
         ax.axvline(thr, linestyle="--", linewidth=0.7)
         ax.axvline(-thr, linestyle="--", linewidth=0.7)
 
-    # Manual X axis if provided
     if (x_min is not None) and (x_max is not None):
         if x_min >= x_max:
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
@@ -233,15 +224,13 @@ def make_love_plot(
     ax.set_yticks(list(y))
     ax.set_yticklabels(love_df["label"])
 
-    # Bold headers
     for text, header_flag in zip(ax.get_yticklabels(), is_header):
         if header_flag:
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    # No title by design
+    # no title
 
-    # Legend controls: always outside, with space carved out
     if show_legend:
         box = ax.get_position()
 
@@ -274,7 +263,6 @@ def make_love_plot(
                 borderaxespad=0.5,
             )
         else:
-            # Fallback: right outside
             ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])
             leg = ax.legend(
                 loc="center left",
@@ -287,7 +275,7 @@ def make_love_plot(
     else:
         fig.tight_layout()
 
-    ax.invert_yaxis()  # largest imbalance at top
+    ax.invert_yaxis()
 
     return fig
 
@@ -312,7 +300,6 @@ def main():
         st.info("Waiting for a TriNetX baseline CSV upload.")
         return
 
-    # Parse baseline table
     df = load_trinetx_baseline(uploaded_file)
 
     before_col, after_col = find_smd_columns(df)
@@ -324,7 +311,6 @@ def main():
         )
         st.stop()
 
-    # Sidebar options
     st.sidebar.header("Plot options")
 
     before_label = st.sidebar.text_input("Label for 'before' group", "Before matching")
@@ -353,7 +339,6 @@ def main():
              "by limiting to the most imbalanced covariates.",
     )
 
-    # Color controls
     st.sidebar.subheader("Colors")
     use_bw = st.sidebar.checkbox(
         "Use black & white style",
@@ -362,19 +347,18 @@ def main():
     )
 
     if use_bw:
-        before_color = "#000000"  # black
-        after_color = "#555555"   # dark grey
+        before_color = "#000000"
+        after_color = "#555555"
     else:
         before_color = st.sidebar.color_picker(
             "Color for 'before' points",
-            "#1f77b4",  # matplotlib default blue
+            "#1f77b4",
         )
         after_color = st.sidebar.color_picker(
             "Color for 'after' points",
-            "#ff7f0e",  # matplotlib default orange
+            "#ff7f0e",
         )
 
-    # X-axis controls
     st.sidebar.subheader("X-axis range")
     auto_xlim = st.sidebar.checkbox(
         "Automatic X-axis range",
@@ -399,7 +383,6 @@ def main():
             st.sidebar.warning("X-axis min should be less than max; values will be swapped.")
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
 
-    # Legend controls (all outside positions)
     st.sidebar.subheader("Legend")
     show_legend = st.sidebar.checkbox("Show legend", value=True)
     legend_position = st.sidebar.selectbox(
@@ -420,7 +403,6 @@ def main():
         step=0.5,
     )
 
-    # Prepare base data for covariates
     love_df_full = prepare_love_data(
         df,
         before_col=before_col,
@@ -428,13 +410,11 @@ def main():
         include_categories=include_categories,
     )
 
-    # ----------------- Covariate editor state ----------------- #
     base_edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
     base_edit_df.insert(0, "Include", True)
-    base_edit_df.insert(1, "Group", "")       # optional metadata
-    base_edit_df.insert(2, "is_header", False)  # grouping header flag
+    base_edit_df.insert(1, "Group", "")
+    base_edit_df.insert(2, "is_header", False)
 
-    # Initialize / reset when new file is uploaded
     if (
         "edit_cov_df" not in st.session_state
         or st.session_state.get("_current_file_name") != uploaded_file.name
@@ -442,13 +422,11 @@ def main():
         st.session_state["_current_file_name"] = uploaded_file.name
         st.session_state["edit_cov_df"] = base_edit_df.copy()
 
-    # Allow user to add header (grouping) rows
     st.subheader("Covariates")
 
     st.markdown(
         "Use the table below to **drag and drop rows** to reorder covariates, "
-        "assign them to **groups** (optional metadata), mark **header rows** "
-        "(`is_header`), rename labels, and include/exclude rows."
+        "mark **header rows** (`is_header`), rename labels, and include/exclude rows."
     )
 
     with st.expander("Add custom grouping header row", expanded=False):
@@ -475,7 +453,6 @@ def main():
                     [df_current, pd.DataFrame([new_row])],
                     ignore_index=True,
                 )
-                st.experimental_rerun()
 
     edit_df = st.session_state["edit_cov_df"]
 
@@ -483,15 +460,11 @@ def main():
         gb = GridOptionsBuilder.from_dataframe(edit_df)
 
         gb.configure_default_column(editable=True, resizable=True)
-
         gb.configure_column("Include", headerCheckboxSelection=False)
         gb.configure_column("Group")
         gb.configure_column("is_header", headerName="Header row")
-
-        # Enable row drag on the label column
         gb.configure_column("label", rowDrag=True)
 
-        # SMD/abs columns read-only
         for col in [before_col, after_col, "abs_before", "abs_after"]:
             gb.configure_column(col, editable=False)
 
@@ -513,14 +486,10 @@ def main():
     if not isinstance(edited_df, pd.DataFrame):
         edited_df = pd.DataFrame(edited_df)
     edited_df = edited_df.reset_index(drop=True)
-
-    # Persist back to session_state
     st.session_state["edit_cov_df"] = edited_df
 
-    # Filter to included rows
     cov_df = edited_df[edited_df["Include"]].copy()
 
-    # Ensure types
     cov_df["is_header"] = cov_df["is_header"].fillna(False).astype(bool)
     cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
     cov_df[before_col] = pd.to_numeric(cov_df[before_col], errors="coerce")
@@ -528,7 +497,6 @@ def main():
     cov_df["abs_before"] = cov_df[before_col].abs()
     cov_df["abs_after"] = cov_df[after_col].abs()
 
-    # Apply max_covariates limit only to data rows (non-headers), preserve order
     data_rows = cov_df[~cov_df["is_header"]].copy()
     header_rows = cov_df[cov_df["is_header"]].copy()
 
@@ -536,16 +504,12 @@ def main():
         keep_data_idx = data_rows["abs_before"].nlargest(max_covariates).index
         data_rows = data_rows.loc[keep_data_idx].sort_index()
 
-    # Recombine headers + data in original order
     combined_df = pd.concat([header_rows, data_rows], axis=0)
     combined_df = combined_df.sort_index()
     cov_df_plot = combined_df.copy()
 
-    # Build plotting dataframe directly from cov_df_plot:
-    # header rows (is_header=True) become bold labels with no points
     plot_df = cov_df_plot[["label", before_col, after_col, "abs_before", "abs_after", "is_header"]].copy()
 
-    # ----------------- Plot ----------------- #
     st.subheader("Love plot")
 
     if plot_df.empty:
@@ -580,10 +544,8 @@ def main():
                 mime="image/png",
             )
 
-    # ----------------- Balance metrics (below the plot) ----------------- #
     st.subheader("Balance metrics")
 
-    # Metrics only on non-header rows
     metric_df = cov_df[~cov_df["is_header"]].copy()
     metrics = compute_love_metrics(
         metric_df,
@@ -594,8 +556,9 @@ def main():
     metrics_df = pd.DataFrame(metrics).T
     st.dataframe(metrics_df.style.format(precision=3))
 
-    # Download SMD table (included covariates only, with Group & header flag)
-    smd_table = cov_df[["Group", "is_header", "label", before_col, after_col, "abs_before", "abs_after"]].reset_index(drop=True)
+    smd_table = cov_df[
+        ["Group", "is_header", "label", before_col, after_col, "abs_before", "abs_after"]
+    ].reset_index(drop=True)
     csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download SMD table (CSV)",
@@ -604,7 +567,6 @@ def main():
         mime="text/csv",
     )
 
-    # Optional: raw baseline table
     with st.expander("Show raw baseline table from TriNetX"):
         st.dataframe(df)
 
