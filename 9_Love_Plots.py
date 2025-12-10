@@ -1,5 +1,5 @@
 """
-TriNetX Love Plot Generator (with drag-and-drop ordering and grouping)
+TriNetX Love Plot Generator (with drag-and-drop ordering, grouping, and legend controls)
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -168,6 +168,9 @@ def make_love_plot(
     after_color: str = "C1",
     x_min=None,
     x_max=None,
+    show_legend: bool = True,
+    legend_position: str = "Right outside",
+    legend_fontsize: float = 10.0,
 ):
     """
     Generate the Love plot matplotlib Figure.
@@ -232,9 +235,35 @@ def make_love_plot(
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    # IMPORTANT: no ax.set_title() here → no in-figure title
+    # No title (per your request)
 
-    ax.legend()
+    # Legend controls
+    if show_legend:
+        if legend_position == "Right outside":
+            leg = ax.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0.0,
+            )
+        elif legend_position == "Upper right (inside)":
+            leg = ax.legend(loc="upper right")
+        elif legend_position == "Upper left (inside)":
+            leg = ax.legend(loc="upper left")
+        elif legend_position == "Lower right (inside)":
+            leg = ax.legend(loc="lower right")
+        elif legend_position == "Lower left (inside)":
+            leg = ax.legend(loc="lower left")
+        elif legend_position == "Top center (inside)":
+            leg = ax.legend(loc="upper center")
+        elif legend_position == "Bottom center (inside)":
+            leg = ax.legend(loc="lower center")
+        else:
+            # Fallback
+            leg = ax.legend(loc="best")
+
+        for txt in leg.get_texts():
+            txt.set_fontsize(legend_fontsize)
+
     ax.invert_yaxis()  # largest imbalance at top
     fig.tight_layout()
 
@@ -347,6 +376,30 @@ def main():
         if x_min >= x_max:
             st.sidebar.warning("X-axis min should be less than max; values will be swapped.")
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
+
+    # Legend controls
+    st.sidebar.subheader("Legend")
+    show_legend = st.sidebar.checkbox("Show legend", value=True)
+    legend_position = st.sidebar.selectbox(
+        "Legend position",
+        [
+            "Right outside",
+            "Upper right (inside)",
+            "Upper left (inside)",
+            "Lower right (inside)",
+            "Lower left (inside)",
+            "Top center (inside)",
+            "Bottom center (inside)",
+        ],
+        index=0,
+    )
+    legend_fontsize = st.sidebar.number_input(
+        "Legend font size",
+        min_value=6.0,
+        max_value=20.0,
+        value=10.0,
+        step=0.5,
+    )
 
     # Prepare data for Love plot
     love_df_full = prepare_love_data(
@@ -478,6 +531,9 @@ def main():
             after_color=after_color,
             x_min=x_min,
             x_max=x_max,
+            show_legend=show_legend,
+            legend_position=legend_position,
+            legend_fontsize=legend_fontsize,
         )
         st.pyplot(fig)
 
@@ -495,7 +551,6 @@ def main():
     # ----------------- Balance metrics (below the plot) ----------------- #
     st.subheader("Balance metrics")
 
-    # Metrics should be computed on covariate rows only (no headers), using included rows
     metrics = compute_love_metrics(
         cov_df,
         before_col=before_col,
