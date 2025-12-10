@@ -1,5 +1,5 @@
 """
-TriNetX Love Plot Generator (with drag-and-drop ordering, grouping, and legend controls)
+TriNetX Love Plot Generator (with drag-and-drop ordering, grouping, and safe legend layout)
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -177,6 +177,7 @@ def make_love_plot(
 
     `love_df` may contain an 'is_header' boolean column; header rows will be
     rendered as bold y-axis labels but will not have points plotted.
+    Legend is always outside the axes so it never overlaps the data.
     """
     if love_df.empty:
         return None
@@ -235,37 +236,60 @@ def make_love_plot(
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    # No title (per your request)
+    # No title (per your earlier request)
 
-    # Legend controls
+    # Legend controls: always outside, with space carved out
     if show_legend:
+        box = ax.get_position()
+
         if legend_position == "Right outside":
+            # Shrink axes width to leave room on the right
+            ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])
             leg = ax.legend(
                 loc="center left",
                 bbox_to_anchor=(1.02, 0.5),
                 borderaxespad=0.0,
             )
-        elif legend_position == "Upper right (inside)":
-            leg = ax.legend(loc="upper right")
-        elif legend_position == "Upper left (inside)":
-            leg = ax.legend(loc="upper left")
-        elif legend_position == "Lower right (inside)":
-            leg = ax.legend(loc="lower right")
-        elif legend_position == "Lower left (inside)":
-            leg = ax.legend(loc="lower left")
-        elif legend_position == "Top center (inside)":
-            leg = ax.legend(loc="upper center")
-        elif legend_position == "Bottom center (inside)":
-            leg = ax.legend(loc="lower center")
+        elif legend_position == "Left outside":
+            # Move axes to the right to leave room on the left
+            ax.set_position([box.x0 + box.width * 0.22, box.y0, box.width * 0.78, box.height])
+            leg = ax.legend(
+                loc="center right",
+                bbox_to_anchor=(-0.02, 0.5),
+                borderaxespad=0.0,
+            )
+        elif legend_position == "Top outside":
+            # Shrink axes height to leave room at the top
+            ax.set_position([box.x0, box.y0, box.width, box.height * 0.82])
+            leg = ax.legend(
+                loc="lower center",
+                bbox_to_anchor=(0.5, 1.03),
+                borderaxespad=0.5,
+            )
+        elif legend_position == "Bottom outside":
+            # Move axes up to leave room at the bottom
+            ax.set_position([box.x0, box.y0 + box.height * 0.18, box.width, box.height * 0.82])
+            leg = ax.legend(
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.03),
+                borderaxespad=0.5,
+            )
         else:
-            # Fallback
-            leg = ax.legend(loc="best")
+            # Fallback: treat as right outside
+            ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])
+            leg = ax.legend(
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0.0,
+            )
 
         for txt in leg.get_texts():
             txt.set_fontsize(legend_fontsize)
+    else:
+        # When no legend, you can safely tighten layout
+        fig.tight_layout()
 
     ax.invert_yaxis()  # largest imbalance at top
-    fig.tight_layout()
 
     return fig
 
@@ -377,19 +401,16 @@ def main():
             st.sidebar.warning("X-axis min should be less than max; values will be swapped.")
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
 
-    # Legend controls
+    # Legend controls (all outside positions)
     st.sidebar.subheader("Legend")
     show_legend = st.sidebar.checkbox("Show legend", value=True)
     legend_position = st.sidebar.selectbox(
-        "Legend position",
+        "Legend position (always outside plot)",
         [
             "Right outside",
-            "Upper right (inside)",
-            "Upper left (inside)",
-            "Lower right (inside)",
-            "Lower left (inside)",
-            "Top center (inside)",
-            "Bottom center (inside)",
+            "Left outside",
+            "Top outside",
+            "Bottom outside",
         ],
         index=0,
     )
