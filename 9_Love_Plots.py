@@ -3,7 +3,7 @@ TriNetX Love Plot Generator
 - Drag-and-drop ordering
 - Custom grouping header rows
 - Legend outside plot, no overlap
-- Manual X-axis, color controls, metrics
+- Manual X-axis, color & figure controls, metrics, narrative, histograms
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -28,10 +28,6 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 def load_trinetx_baseline(uploaded_file) -> pd.DataFrame:
     """
     Load a TriNetX 'Baseline Patient Characteristics' CSV.
-
-    Handles the front-matter (title, notes, etc.) by locating the line
-    that starts with 'Characteristic ID' and reading from there.
-    Falls back to a standard pd.read_csv if that header is not found.
     """
     raw_bytes = uploaded_file.getvalue()
     text = raw_bytes.decode("utf-8", errors="ignore")
@@ -78,9 +74,6 @@ def prepare_love_data(
 ) -> pd.DataFrame:
     """
     Create a tidy dataframe suitable for Love plotting.
-
-    Each row corresponds to a covariate (or covariate-category level),
-    with columns: label, <before_col>, <after_col>, abs_before, abs_after
     """
     mask = df[before_col].notna() | df[after_col].notna()
     df = df.loc[mask].copy()
@@ -169,19 +162,21 @@ def make_love_plot(
     show_legend: bool = True,
     legend_position: str = "Right outside",
     legend_fontsize: float = 10.0,
+    fig_width: float = 8.0,
+    height_per_row: float = 0.3,
+    y_tick_fontsize: float = 10.0,
+    x_tick_fontsize: float = 10.0,
+    x_label_fontsize: float = 12.0,
+    shade_band: bool = False,
 ):
     """
     Generate the Love plot matplotlib Figure.
-
-    `love_df` may contain an 'is_header' boolean column; header rows will be
-    rendered as bold y-axis labels but will not have points plotted.
-    Legend is always outside the axes so it never overlaps the data.
     """
     if love_df.empty:
         return None
 
-    fig_height = max(6, len(love_df) * 0.3)
-    fig, ax = plt.subplots(figsize=(8, fig_height))
+    fig_height = max(4.0, len(love_df) * height_per_row)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     y = np.arange(len(love_df))
 
@@ -211,6 +206,9 @@ def make_love_plot(
         color=after_color,
     )
 
+    if shade_band:
+        ax.axvspan(-threshold, threshold, alpha=0.05)
+
     ax.axvline(0, linestyle="-", linewidth=1)
     for thr in [threshold, 2 * threshold]:
         ax.axvline(thr, linestyle="--", linewidth=0.7)
@@ -225,12 +223,15 @@ def make_love_plot(
     ax.set_yticklabels(love_df["label"])
 
     for text, header_flag in zip(ax.get_yticklabels(), is_header):
+        text.set_fontsize(y_tick_fontsize)
         if header_flag:
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    # no title
+    ax.xaxis.label.set_size(x_label_fontsize)
+    ax.tick_params(axis="x", labelsize=x_tick_fontsize)
 
+    # Legend: always outside, with space carved out
     if show_legend:
         box = ax.get_position()
 
@@ -311,6 +312,7 @@ def main():
         )
         st.stop()
 
+    # Sidebar options
     st.sidebar.header("Plot options")
 
     before_label = st.sidebar.text_input("Label for 'before' group", "Before matching")
@@ -339,6 +341,7 @@ def main():
              "by limiting to the most imbalanced covariates.",
     )
 
+    # Colors
     st.sidebar.subheader("Colors")
     use_bw = st.sidebar.checkbox(
         "Use black & white style",
@@ -359,6 +362,7 @@ def main():
             "#ff7f0e",
         )
 
+    # X-axis controls
     st.sidebar.subheader("X-axis range")
     auto_xlim = st.sidebar.checkbox(
         "Automatic X-axis range",
@@ -383,6 +387,7 @@ def main():
             st.sidebar.warning("X-axis min should be less than max; values will be swapped.")
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
 
+    # Legend controls
     st.sidebar.subheader("Legend")
     show_legend = st.sidebar.checkbox("Show legend", value=True)
     legend_position = st.sidebar.selectbox(
@@ -403,6 +408,62 @@ def main():
         step=0.5,
     )
 
+    # Figure size & style
+    st.sidebar.subheader("Figure size & style")
+    fig_width = st.sidebar.number_input(
+        "Figure width (inches)",
+        min_value=4.0,
+        max_value=12.0,
+        value=8.0,
+        step=0.5,
+    )
+    height_per_row = st.sidebar.number_input(
+        "Height per covariate (inches)",
+        min_value=0.2,
+        max_value=0.8,
+        value=0.3,
+        step=0.05,
+    )
+    dpi = st.sidebar.number_input(
+        "Export DPI",
+        min_value=100,
+        max_value=600,
+        value=300,
+        step=50,
+    )
+
+    # Font sizes
+    st.sidebar.subheader("Font sizes")
+    y_tick_fontsize = st.sidebar.number_input(
+        "Y-axis label font size",
+        min_value=6.0,
+        max_value=20.0,
+        value=10.0,
+        step=0.5,
+    )
+    x_tick_fontsize = st.sidebar.number_input(
+        "X-axis tick font size",
+        min_value=6.0,
+        max_value=20.0,
+        value=10.0,
+        step=0.5,
+    )
+    x_label_fontsize = st.sidebar.number_input(
+        "X-axis label font size",
+        min_value=6.0,
+        max_value=24.0,
+        value=12.0,
+        step=0.5,
+    )
+
+    # Reference band
+    st.sidebar.subheader("Reference band")
+    shade_band = st.sidebar.checkbox(
+        "Shade region |SMD| < threshold",
+        value=False,
+    )
+
+    # Prepare base data for covariates
     love_df_full = prepare_love_data(
         df,
         before_col=before_col,
@@ -415,6 +476,7 @@ def main():
     base_edit_df.insert(1, "Group", "")
     base_edit_df.insert(2, "is_header", False)
 
+    # Initialize / reset when new file is uploaded
     if (
         "edit_cov_df" not in st.session_state
         or st.session_state.get("_current_file_name") != uploaded_file.name
@@ -422,13 +484,31 @@ def main():
         st.session_state["_current_file_name"] = uploaded_file.name
         st.session_state["edit_cov_df"] = base_edit_df.copy()
 
+    # ----------------- Covariate editor ----------------- #
     st.subheader("Covariates")
 
     st.markdown(
         "Use the table below to **drag and drop rows** to reorder covariates, "
-        "mark **header rows** (`is_header`), rename labels, and include/exclude rows."
+        "mark **header rows** (`is_header`), rename labels, adjust grouping metadata, "
+        "and include/exclude rows."
     )
 
+    # Reset controls
+    col_reset1, col_reset2, col_reset3 = st.columns(3)
+    with col_reset1:
+        if st.button("Reset to original baseline ordering"):
+            st.session_state["edit_cov_df"] = base_edit_df.copy()
+    with col_reset2:
+        if st.button("Remove all header rows"):
+            df_cur = st.session_state["edit_cov_df"]
+            st.session_state["edit_cov_df"] = df_cur[~df_cur["is_header"]].reset_index(drop=True)
+    with col_reset3:
+        if st.button("Include all rows"):
+            df_cur = st.session_state["edit_cov_df"].copy()
+            df_cur["Include"] = True
+            st.session_state["edit_cov_df"] = df_cur
+
+    # Add header rows
     with st.expander("Add custom grouping header row", expanded=False):
         new_header_label = st.text_input(
             "Header label (e.g., Demographics, Labs, Medications)",
@@ -454,12 +534,18 @@ def main():
                     ignore_index=True,
                 )
 
-    edit_df = st.session_state["edit_cov_df"]
+    edit_df = st.session_state["edit_cov_df"].copy()
+
+    # Display DF with a visual cue for header rows (uppercase labels)
+    edit_display_df = edit_df.copy()
+    edit_display_df.loc[edit_display_df["is_header"], "label"] = (
+        edit_display_df.loc[edit_display_df["is_header"], "label"].astype(str).str.upper()
+    )
 
     with st.expander("Edit covariate table (drag rows to reorder)", expanded=False):
-        gb = GridOptionsBuilder.from_dataframe(edit_df)
+        gb = GridOptionsBuilder.from_dataframe(edit_display_df)
 
-        gb.configure_default_column(editable=True, resizable=True)
+        gb.configure_default_column(editable=True, resizable=True, filter=True, sortable=True)
         gb.configure_column("Include", headerCheckboxSelection=False)
         gb.configure_column("Group")
         gb.configure_column("is_header", headerName="Header row")
@@ -474,7 +560,7 @@ def main():
         grid_options["rowDragMultiRow"] = True
 
         grid_response = AgGrid(
-            edit_df,
+            edit_display_df,
             gridOptions=grid_options,
             update_mode=GridUpdateMode.MODEL_CHANGED,
             fit_columns_on_grid_load=True,
@@ -486,9 +572,16 @@ def main():
     if not isinstance(edited_df, pd.DataFrame):
         edited_df = pd.DataFrame(edited_df)
     edited_df = edited_df.reset_index(drop=True)
-    st.session_state["edit_cov_df"] = edited_df
 
-    cov_df = edited_df[edited_df["Include"]].copy()
+    # Write edits back into the underlying df (including drag order)
+    for col in ["Include", "Group", "is_header", "label", before_col, after_col, "abs_before", "abs_after"]:
+        if col in edited_df.columns:
+            edit_df[col] = edited_df[col]
+
+    st.session_state["edit_cov_df"] = edit_df
+
+    # Filter to included rows
+    cov_df = edit_df[edit_df["Include"]].copy()
 
     cov_df["is_header"] = cov_df["is_header"].fillna(False).astype(bool)
     cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
@@ -497,6 +590,7 @@ def main():
     cov_df["abs_before"] = cov_df[before_col].abs()
     cov_df["abs_after"] = cov_df[after_col].abs()
 
+    # Apply max_covariates limit only to data rows (non-headers), preserve order
     data_rows = cov_df[~cov_df["is_header"]].copy()
     header_rows = cov_df[cov_df["is_header"]].copy()
 
@@ -510,6 +604,7 @@ def main():
 
     plot_df = cov_df_plot[["label", before_col, after_col, "abs_before", "abs_after", "is_header"]].copy()
 
+    # ----------------- Plot ----------------- #
     st.subheader("Love plot")
 
     if plot_df.empty:
@@ -530,12 +625,18 @@ def main():
             show_legend=show_legend,
             legend_position=legend_position,
             legend_fontsize=legend_fontsize,
+            fig_width=fig_width,
+            height_per_row=height_per_row,
+            y_tick_fontsize=y_tick_fontsize,
+            x_tick_fontsize=x_tick_fontsize,
+            x_label_fontsize=x_label_fontsize,
+            shade_band=shade_band,
         )
         st.pyplot(fig)
 
         if fig is not None:
             buf = BytesIO()
-            fig.savefig(buf, format="png", bbox_inches="tight")
+            fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
             buf.seek(0)
             st.download_button(
                 "Download Love plot (PNG)",
@@ -544,6 +645,7 @@ def main():
                 mime="image/png",
             )
 
+    # ----------------- Balance metrics & summary ----------------- #
     st.subheader("Balance metrics")
 
     metric_df = cov_df[~cov_df["is_header"]].copy()
@@ -556,6 +658,50 @@ def main():
     metrics_df = pd.DataFrame(metrics).T
     st.dataframe(metrics_df.style.format(precision=3))
 
+    # Narrative summary
+    if not metric_df.empty:
+        before_stats = metrics.get("Before", {})
+        after_stats = metrics.get("After", {})
+        overall_stats = metrics.get("Overall", {})
+
+        b_mean = before_stats.get("Mean |SMD|")
+        a_mean = after_stats.get("Mean |SMD|")
+        b_n = before_stats.get(f"N(|SMD| > {threshold})")
+        a_n = after_stats.get(f"N(|SMD| > {threshold})")
+        b_total = before_stats.get("N covariates")
+        a_total = after_stats.get("N covariates")
+        reduction = overall_stats.get("Percent reduction in mean |SMD|")
+
+        def fmt(x, digits=3):
+            return "NA" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{x:.{digits}f}"
+
+        summary_text = (
+            f"Before matching, the mean |SMD| was **{fmt(b_mean)}** with "
+            f"**{b_n} / {b_total}** covariates above {threshold:.2f}. "
+            f"After matching, the mean |SMD| was **{fmt(a_mean)}** with "
+            f"**{a_n} / {a_total}** covariates above {threshold:.2f}."
+        )
+        if reduction is not None and not math.isnan(reduction):
+            summary_text += f" This corresponds to a **{reduction:.1f}%** reduction in mean imbalance."
+
+        st.markdown(summary_text)
+
+        # Histogram of |SMD| before vs after
+        if metric_df[before_col].notna().any() or metric_df[after_col].notna().any():
+            fig2, ax2 = plt.subplots(figsize=(6, 4))
+            before_abs = metric_df[before_col].abs().dropna()
+            after_abs = metric_df[after_col].abs().dropna()
+            if not before_abs.empty:
+                ax2.hist(before_abs, bins=20, alpha=0.5, label="Before")
+            if not after_abs.empty:
+                ax2.hist(after_abs, bins=20, alpha=0.5, label="After")
+            ax2.axvline(threshold, linestyle="--")
+            ax2.set_xlabel("|SMD|")
+            ax2.set_ylabel("Count")
+            ax2.legend()
+            st.pyplot(fig2)
+
+    # Download SMD table (included covariates only, with Group & header flag)
     smd_table = cov_df[
         ["Group", "is_header", "label", before_col, after_col, "abs_before", "abs_after"]
     ].reset_index(drop=True)
@@ -567,6 +713,7 @@ def main():
         mime="text/csv",
     )
 
+    # Optional: raw baseline table
     with st.expander("Show raw baseline table from TriNetX"):
         st.dataframe(df)
 
