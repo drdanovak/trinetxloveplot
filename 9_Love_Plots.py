@@ -1,17 +1,8 @@
 """
-TriNetX Love Plot Generator
+TriNetX Love Plot Generator (with color controls, covariate editing, and manual x-axis)
 
 Usage:
     streamlit run love_plot_app.py
-
-This app expects a TriNetX "Baseline Patient Characteristics" CSV export
-(such as the example you provided). It:
-
-- Strips off the header/notes section.
-- Parses the baseline table.
-- Finds the 'Before' and 'After' standardized mean difference columns.
-- Generates a Love plot.
-- Computes simple balance metrics and exposes a CSV download of SMDs.
 """
 
 import math
@@ -19,8 +10,11 @@ from io import StringIO, BytesIO
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import streamlit as st
+
+import matplotlib
+matplotlib.use("Agg")  # headless backend for Streamlit / servers
+import matplotlib.pyplot as plt
 
 
 # ------------------------- Parsing helpers ------------------------- #
@@ -169,6 +163,10 @@ def make_love_plot(
     before_label: str = "Before matching",
     after_label: str = "After matching",
     threshold: float = 0.1,
+    before_color: str = "C0",
+    after_color: str = "C1",
+    x_min: float | None = None,
+    x_max: float | None = None,
 ):
     """
     Generate the Love plot matplotlib Figure.
@@ -186,12 +184,14 @@ def make_love_plot(
         y_positions,
         label=before_label,
         marker="o",
+        color=before_color,
     )
     ax.scatter(
         love_df[after_col],
         y_positions,
         label=after_label,
         marker="s",
+        color=after_color,
     )
 
     # Vertical reference lines
@@ -199,6 +199,13 @@ def make_love_plot(
     for thr in [threshold, 2 * threshold]:
         ax.axvline(thr, linestyle="--", linewidth=0.7)
         ax.axvline(-thr, linestyle="--", linewidth=0.7)
+
+    # Manual X axis if provided
+    if (x_min is not None) and (x_max is not None):
+        # Safety: make sure min < max
+        if x_min >= x_max:
+            x_min, x_max = min(x_min, x_max), max(x_min, x_max)
+        ax.set_xlim(x_min, x_max)
 
     ax.set_yticks(list(y_positions))
     ax.set_yticklabels(love_df["label"])
@@ -246,8 +253,10 @@ def main():
 
     # Sidebar options
     st.sidebar.header("Plot options")
+
     before_label = st.sidebar.text_input("Label for 'before' group", "Before matching")
     after_label = st.sidebar.text_input("Label for 'after' group", "After matching")
+
     threshold = st.sidebar.number_input(
         "Reference threshold for |SMD|",
         min_value=0.0,
@@ -255,18 +264,67 @@ def main():
         value=0.10,
         step=0.01,
     )
+
     include_categories = st.sidebar.checkbox(
         "Show category levels as separate covariates",
         value=True,
     )
+
     max_covariates = st.sidebar.slider(
         "Max covariates to display in Love plot",
         min_value=5,
         max_value=100,
         value=40,
         step=5,
-        help="If your baseline table is large, this keeps the plot readable by showing only the most imbalanced covariates.",
+        help="If your baseline table is large, this keeps the plot readable "
+             "by showing only the most imbalanced covariates.",
     )
+
+    # Color controls
+    st.sidebar.subheader("Colors")
+    use_bw = st.sidebar.checkbox(
+        "Use black & white style",
+        value=False,
+        help="Overrides custom colors with black/grey markers.",
+    )
+
+    if use_bw:
+        before_color = "#000000"  # black
+        after_color = "#555555"   # dark grey
+    else:
+        before_color = st.sidebar.color_picker(
+            "Color for 'before' points",
+            "#1f77b4",  # matplotlib default blue
+        )
+        after_color = st.sidebar.color_picker(
+            "Color for 'after' points",
+            "#ff7f0e",  # matplotlib default orange
+        )
+
+    # X-axis controls
+    st.sidebar.subheader("X-axis range")
+    auto_xlim = st.sidebar.checkbox(
+        "Automatic X-axis range",
+        value=True,
+        help="Uncheck to manually specify the SMD axis limits.",
+    )
+
+    x_min = None
+    x_max = None
+    if not auto_xlim:
+        x_min = st.sidebar.number_input(
+            "X-axis minimum",
+            value=-0.5,
+            step=0.05,
+        )
+        x_max = st.sidebar.number_input(
+            "X-axis maximum",
+            value=0.5,
+            step=0.05,
+        )
+        if x_min >= x_max:
+            st.sidebar.warning("X-axis min should be less than max; values will be swapped.")
+            x_min, x_max = min(x_min, x_max), max(x_min, x_max)
 
     # Prepare data for Love plot
     love_df_full = prepare_love_data(
@@ -276,11 +334,70 @@ def main():
         include_categories=include_categories,
     )
 
-    # Keep only the most imbalanced covariates if requested
-    if len(love_df_full) > max_covariates:
-        love_df_plot = love_df_full.tail(max_covariates)
+    # ----------------- Covariate editor (rename/remove) ----------------- #
+    st.subheader("Covariates")
+
+    with st.expander("Edit covariate labels / include/exclude rows", expanded=False):
+        edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
+        edit_df.insert(0, "Include", True)
+
+        edited_df = st.data_editor(
+            edit_df,
+            num_rows="fixed",
+            hide_index=True,
+            column_config={
+                "Include": st.column_config.CheckboxColumn(
+                    "Include",
+                    help="Uncheck to remove a covariate from the plot and metrics.",
+                ),
+                "label": st.column_config.TextColumn(
+                    "Covariate label",
+                    help="Edit the display name of the covariate.",
+                ),
+                before_col: st.column_config.NumberColumn(
+                    before_col,
+                    format="%.3f",
+                    disabled=True,
+                ),
+                after_col: st.column_config.NumberColumn(
+                    after_col,
+                    format="%.3f",
+                    disabled=True,
+                ),
+                "abs_before": st.column_config.NumberColumn(
+                    "abs_before",
+                    format="%.3f",
+                    disabled=True,
+                ),
+                "abs_after": st.column_config.NumberColumn(
+                    "abs_after",
+                    format="%.3f",
+                    disabled=True,
+                ),
+            },
+        )
+
+    # Filter to included covariates and re-sort by imbalance
+    if "Include" in edited_df.columns:
+        love_df_filtered = edited_df[edited_df["Include"]].copy()
     else:
-        love_df_plot = love_df_full
+        love_df_filtered = edited_df.copy()
+
+    # Recompute absolute SMDs in case anything changed
+    love_df_filtered["abs_before"] = pd.to_numeric(
+        love_df_filtered[before_col], errors="coerce"
+    ).abs()
+    love_df_filtered["abs_after"] = pd.to_numeric(
+        love_df_filtered[after_col], errors="coerce"
+    ).abs()
+
+    love_df_filtered = love_df_filtered.sort_values("abs_before", ascending=True)
+
+    # Keep only the most imbalanced covariates for plotting
+    if len(love_df_filtered) > max_covariates:
+        love_df_plot = love_df_filtered.tail(max_covariates)
+    else:
+        love_df_plot = love_df_filtered
 
     # Layout: plot on left, metrics on right
     col_plot, col_metrics = st.columns([2, 1])
@@ -288,7 +405,7 @@ def main():
     with col_plot:
         st.subheader("Love plot")
         if love_df_plot.empty:
-            st.warning("No covariates with non-missing SMDs to plot.")
+            st.warning("No covariates with non-missing SMDs to plot after filtering.")
         else:
             fig = make_love_plot(
                 love_df_plot,
@@ -297,6 +414,10 @@ def main():
                 before_label=before_label,
                 after_label=after_label,
                 threshold=threshold,
+                before_color=before_color,
+                after_color=after_color,
+                x_min=x_min,
+                x_max=x_max,
             )
             st.pyplot(fig)
 
@@ -314,7 +435,7 @@ def main():
     with col_metrics:
         st.subheader("Balance metrics")
         metrics = compute_love_metrics(
-            df,
+            love_df_filtered,
             before_col=before_col,
             after_col=after_col,
             threshold=threshold,
@@ -322,8 +443,8 @@ def main():
         metrics_df = pd.DataFrame(metrics).T
         st.dataframe(metrics_df.style.format(precision=3))
 
-        # Download SMD table
-        smd_table = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]]
+        # Download SMD table (for included covariates only)
+        smd_table = love_df_filtered[["label", before_col, after_col, "abs_before", "abs_after"]]
         csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Download SMD table (CSV)",
@@ -333,7 +454,7 @@ def main():
         )
 
     # Optional: raw baseline table
-    with st.expander("Show raw baseline table"):
+    with st.expander("Show raw baseline table from TriNetX"):
         st.dataframe(df)
 
 
