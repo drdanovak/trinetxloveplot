@@ -1,5 +1,5 @@
 """
-TriNetX Love Plot Generator (with grouping, ordering, and manual x-axis)
+TriNetX Love Plot Generator (with drag-and-drop ordering and grouping)
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -15,6 +15,8 @@ import streamlit as st
 import matplotlib
 matplotlib.use("Agg")  # headless backend for Streamlit / servers
 import matplotlib.pyplot as plt
+
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 
 
 # ------------------------- Parsing helpers ------------------------- #
@@ -75,9 +77,7 @@ def prepare_love_data(
     Create a tidy dataframe suitable for Love plotting.
 
     Each row corresponds to a covariate (or covariate-category level),
-    with columns:
-
-        label, <before_col>, <after_col>, abs_before, abs_after
+    with columns: label, <before_col>, <after_col>, abs_before, abs_after
     """
     # Keep rows that have an SMD in at least one of the two columns
     mask = df[before_col].notna() | df[after_col].notna()
@@ -106,8 +106,9 @@ def prepare_love_data(
     df["abs_after"] = df[after_col].abs()
 
     love_df = df[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
-    # Initial sort by imbalance; you can override via "Order" in the editor
-    love_df = love_df.sort_values("abs_before", ascending=True)
+
+    # Initial sort by imbalance; you can override via drag-and-drop later
+    love_df = love_df.sort_values("abs_before", ascending=True).reset_index(drop=True)
 
     return love_df
 
@@ -231,7 +232,7 @@ def make_love_plot(
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    ax.set_title("Love plot (covariate balance)")
+    # IMPORTANT: no ax.set_title() here → no in-figure title
 
     ax.legend()
     ax.invert_yaxis()  # largest imbalance at top
@@ -355,61 +356,57 @@ def main():
         include_categories=include_categories,
     )
 
-    # ----------------- Covariate editor (group / order / rename / include) ----------------- #
+    # ----------------- Covariate editor (drag / group / rename / include) ----------------- #
     st.subheader("Covariates")
 
-    with st.expander("Edit covariate labels, groups, and inclusion", expanded=False):
-        edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
+    st.markdown(
+        "Use the table below to **drag and drop rows** to reorder covariates, "
+        "assign them to **groups** (e.g., Demographics, Labs, Medications), "
+        "rename labels, and include/exclude rows."
+    )
 
-        # Add control columns
-        edit_df.insert(0, "Include", True)
-        edit_df.insert(1, "Group", "")  # e.g., Demographics, Labs, Medications
-        edit_df.insert(2, "Order", np.arange(1, len(edit_df) + 1))
+    edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
 
-        edited_df = st.data_editor(
+    # Add control columns
+    edit_df.insert(0, "Include", True)
+    edit_df.insert(1, "Group", "")  # e.g., Demographics, Labs, Medications
+
+    with st.expander("Edit covariate table (drag rows to reorder)", expanded=False):
+        gb = GridOptionsBuilder.from_dataframe(edit_df)
+
+        # default columns editable/resizable
+        gb.configure_default_column(editable=True, resizable=True)
+
+        # Specific columns
+        gb.configure_column("Include", headerCheckboxSelection=False)
+        gb.configure_column("Group")
+        # Enable row drag on the label column
+        gb.configure_column("label", rowDrag=True)
+
+        # SMD/abs columns read-only
+        for col in [before_col, after_col, "abs_before", "abs_after"]:
+            gb.configure_column(col, editable=False)
+
+        grid_options = gb.build()
+        # Managed row drag so order changes when you drop
+        grid_options["rowDragManaged"] = True
+        grid_options["rowDragEntireRow"] = True
+        grid_options["rowDragMultiRow"] = True
+
+        grid_response = AgGrid(
             edit_df,
-            num_rows="fixed",
-            hide_index=True,
-            column_config={
-                "Include": st.column_config.CheckboxColumn(
-                    "Include",
-                    help="Uncheck to remove a covariate from the plot and metrics.",
-                ),
-                "Group": st.column_config.TextColumn(
-                    "Group",
-                    help="Optional: use a group label (e.g., Demographics, Labs, Medications).",
-                ),
-                "Order": st.column_config.NumberColumn(
-                    "Order",
-                    help="Manual ordering within each group. Lower values appear higher in the plot.",
-                    format="%.0f",
-                ),
-                "label": st.column_config.TextColumn(
-                    "Covariate label",
-                    help="Edit the display name of the covariate.",
-                ),
-                before_col: st.column_config.NumberColumn(
-                    before_col,
-                    format="%.3f",
-                    disabled=True,
-                ),
-                after_col: st.column_config.NumberColumn(
-                    after_col,
-                    format="%.3f",
-                    disabled=True,
-                ),
-                "abs_before": st.column_config.NumberColumn(
-                    "abs_before",
-                    format="%.3f",
-                    disabled=True,
-                ),
-                "abs_after": st.column_config.NumberColumn(
-                    "abs_after",
-                    format="%.3f",
-                    disabled=True,
-                ),
-            },
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.MODEL_CHANGED,
+            fit_columns_on_grid_load=True,
+            enable_enterprise_modules=False,
+            height=400,
         )
+
+    edited_df = grid_response["data"]
+    if not isinstance(edited_df, pd.DataFrame):
+        edited_df = pd.DataFrame(edited_df)
+
+    edited_df = edited_df.reset_index(drop=True)
 
     # Filter to included covariates
     if "Include" in edited_df.columns:
@@ -423,33 +420,21 @@ def main():
     cov_df["abs_before"] = cov_df[before_col].abs()
     cov_df["abs_after"] = cov_df[after_col].abs()
 
-    # Normalize group and order
     cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
-    cov_df["Order"] = pd.to_numeric(cov_df["Order"], errors="coerce")
-    if cov_df["Order"].isna().any():
-        cov_df.loc[cov_df["Order"].isna(), "Order"] = np.arange(
-            1, cov_df["Order"].isna().sum() + 1
-        )
 
-    # Sort by Group then Order
-    cov_df = cov_df.sort_values(["Group", "Order", "abs_before"], ascending=[True, True, True])
-
-    # Limit to max_covariates (on covariate rows only, no headers yet)
+    # Limit to max_covariates based on biggest imbalance, but preserve current row order
     if len(cov_df) > max_covariates:
-        # Keep the rows with the largest abs_before overall
         keep_idx = cov_df["abs_before"].nlargest(max_covariates).index
-        cov_df_plot = cov_df.loc[keep_idx].copy()
-        # Re-sort after subsetting
-        cov_df_plot = cov_df_plot.sort_values(["Group", "Order", "abs_before"], ascending=[True, True, True])
+        cov_df_plot = cov_df.loc[keep_idx].sort_index()
     else:
         cov_df_plot = cov_df.copy()
 
-    # Build plotting dataframe with group headers
+    # Build plotting dataframe with group headers (based on current order)
     rows = []
-    for group_value, group_df in cov_df_plot.groupby("Group", sort=False):
-        group_value = group_value.strip()
-        if group_value != "":
-            # Add a header row for this group (bold label, no SMD values)
+    prev_group = None
+    for _, row in cov_df_plot.iterrows():
+        group_value = row["Group"].strip()
+        if group_value != "" and group_value != prev_group:
             rows.append(
                 {
                     "label": group_value,
@@ -460,18 +445,18 @@ def main():
                     "is_header": True,
                 }
             )
+            prev_group = group_value
 
-        for _, row in group_df.iterrows():
-            rows.append(
-                {
-                    "label": row["label"],
-                    before_col: row[before_col],
-                    after_col: row[after_col],
-                    "abs_before": row["abs_before"],
-                    "abs_after": row["abs_after"],
-                    "is_header": False,
-                }
-            )
+        rows.append(
+            {
+                "label": row["label"],
+                before_col: row[before_col],
+                after_col: row[after_col],
+                "abs_before": row["abs_before"],
+                "abs_after": row["abs_after"],
+                "is_header": False,
+            }
+        )
 
     plot_df = pd.DataFrame(rows)
 
@@ -520,8 +505,8 @@ def main():
     metrics_df = pd.DataFrame(metrics).T
     st.dataframe(metrics_df.style.format(precision=3))
 
-    # Download SMD table (included covariates only, no headers)
-    smd_table = cov_df[["Group", "Order", "label", before_col, after_col, "abs_before", "abs_after"]]
+    # Download SMD table (included covariates only, with Group and current order)
+    smd_table = cov_df[["Group", "label", before_col, after_col, "abs_before", "abs_after"]].reset_index(drop=True)
     csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download SMD table (CSV)",
