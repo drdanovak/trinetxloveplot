@@ -1,8 +1,8 @@
 """
-TriNetX Love Plot Generator (with color controls, covariate editing, and manual x-axis)
+TriNetX Love Plot Generator (with grouping, ordering, and manual x-axis)
 
 Usage:
-    streamlit run love_plot_app.py
+    streamlit run 9_Love_Plots.py
 """
 
 import math
@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 
 # ------------------------- Parsing helpers ------------------------- #
 
-def load_trinetx_baseline(uploaded_file: "st.runtime.uploaded_file_manager.UploadedFile") -> pd.DataFrame:
+def load_trinetx_baseline(uploaded_file) -> pd.DataFrame:
     """
     Load a TriNetX 'Baseline Patient Characteristics' CSV.
 
@@ -106,7 +106,7 @@ def prepare_love_data(
     df["abs_after"] = df[after_col].abs()
 
     love_df = df[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
-    # Sort so that largest imbalance appears at the top of the plot
+    # Initial sort by imbalance; you can override via "Order" in the editor
     love_df = love_df.sort_values("abs_before", ascending=True)
 
     return love_df
@@ -165,11 +165,14 @@ def make_love_plot(
     threshold: float = 0.1,
     before_color: str = "C0",
     after_color: str = "C1",
-    x_min: float | None = None,
-    x_max: float | None = None,
+    x_min=None,
+    x_max=None,
 ):
     """
     Generate the Love plot matplotlib Figure.
+
+    `love_df` may contain an 'is_header' boolean column; header rows will be
+    rendered as bold y-axis labels but will not have points plotted.
     """
     if love_df.empty:
         return None
@@ -177,18 +180,31 @@ def make_love_plot(
     fig_height = max(6, len(love_df) * 0.3)
     fig, ax = plt.subplots(figsize=(8, fig_height))
 
-    y_positions = range(len(love_df))
+    y = np.arange(len(love_df))
+
+    if "is_header" in love_df.columns:
+        is_header = love_df["is_header"].fillna(False).to_numpy(dtype=bool)
+    else:
+        is_header = np.zeros(len(love_df), dtype=bool)
+
+    # Series to numpy for masking
+    x_before = pd.to_numeric(love_df[before_col], errors="coerce").to_numpy()
+    x_after = pd.to_numeric(love_df[after_col], errors="coerce").to_numpy()
+
+    # Plot only non-header rows and non-missing SMDs
+    mask_before = (~is_header) & ~np.isnan(x_before)
+    mask_after = (~is_header) & ~np.isnan(x_after)
 
     ax.scatter(
-        love_df[before_col],
-        y_positions,
+        x_before[mask_before],
+        y[mask_before],
         label=before_label,
         marker="o",
         color=before_color,
     )
     ax.scatter(
-        love_df[after_col],
-        y_positions,
+        x_after[mask_after],
+        y[mask_after],
         label=after_label,
         marker="s",
         color=after_color,
@@ -202,13 +218,18 @@ def make_love_plot(
 
     # Manual X axis if provided
     if (x_min is not None) and (x_max is not None):
-        # Safety: make sure min < max
         if x_min >= x_max:
             x_min, x_max = min(x_min, x_max), max(x_min, x_max)
         ax.set_xlim(x_min, x_max)
 
-    ax.set_yticks(list(y_positions))
+    ax.set_yticks(list(y))
     ax.set_yticklabels(love_df["label"])
+
+    # Bold headers
+    for text, header_flag in zip(ax.get_yticklabels(), is_header):
+        if header_flag:
+            text.set_fontweight("bold")
+
     ax.set_xlabel("Standardized mean difference")
     ax.set_title("Love plot (covariate balance)")
 
@@ -273,11 +294,11 @@ def main():
     max_covariates = st.sidebar.slider(
         "Max covariates to display in Love plot",
         min_value=5,
-        max_value=100,
-        value=40,
+        max_value=150,
+        value=60,
         step=5,
         help="If your baseline table is large, this keeps the plot readable "
-             "by showing only the most imbalanced covariates.",
+             "by limiting to the most imbalanced covariates.",
     )
 
     # Color controls
@@ -334,12 +355,16 @@ def main():
         include_categories=include_categories,
     )
 
-    # ----------------- Covariate editor (rename/remove) ----------------- #
+    # ----------------- Covariate editor (group / order / rename / include) ----------------- #
     st.subheader("Covariates")
 
-    with st.expander("Edit covariate labels / include/exclude rows", expanded=False):
+    with st.expander("Edit covariate labels, groups, and inclusion", expanded=False):
         edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
+
+        # Add control columns
         edit_df.insert(0, "Include", True)
+        edit_df.insert(1, "Group", "")  # e.g., Demographics, Labs, Medications
+        edit_df.insert(2, "Order", np.arange(1, len(edit_df) + 1))
 
         edited_df = st.data_editor(
             edit_df,
@@ -349,6 +374,15 @@ def main():
                 "Include": st.column_config.CheckboxColumn(
                     "Include",
                     help="Uncheck to remove a covariate from the plot and metrics.",
+                ),
+                "Group": st.column_config.TextColumn(
+                    "Group",
+                    help="Optional: use a group label (e.g., Demographics, Labs, Medications).",
+                ),
+                "Order": st.column_config.NumberColumn(
+                    "Order",
+                    help="Manual ordering within each group. Lower values appear higher in the plot.",
+                    format="%.0f",
                 ),
                 "label": st.column_config.TextColumn(
                     "Covariate label",
@@ -377,51 +411,92 @@ def main():
             },
         )
 
-    # Filter to included covariates and re-sort by imbalance
+    # Filter to included covariates
     if "Include" in edited_df.columns:
-        love_df_filtered = edited_df[edited_df["Include"]].copy()
+        cov_df = edited_df[edited_df["Include"]].copy()
     else:
-        love_df_filtered = edited_df.copy()
+        cov_df = edited_df.copy()
 
     # Recompute absolute SMDs in case anything changed
-    love_df_filtered["abs_before"] = pd.to_numeric(
-        love_df_filtered[before_col], errors="coerce"
-    ).abs()
-    love_df_filtered["abs_after"] = pd.to_numeric(
-        love_df_filtered[after_col], errors="coerce"
-    ).abs()
+    cov_df[before_col] = pd.to_numeric(cov_df[before_col], errors="coerce")
+    cov_df[after_col] = pd.to_numeric(cov_df[after_col], errors="coerce")
+    cov_df["abs_before"] = cov_df[before_col].abs()
+    cov_df["abs_after"] = cov_df[after_col].abs()
 
-    love_df_filtered = love_df_filtered.sort_values("abs_before", ascending=True)
+    # Normalize group and order
+    cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
+    cov_df["Order"] = pd.to_numeric(cov_df["Order"], errors="coerce")
+    if cov_df["Order"].isna().any():
+        cov_df.loc[cov_df["Order"].isna(), "Order"] = np.arange(
+            1, cov_df["Order"].isna().sum() + 1
+        )
 
-    # Keep only the most imbalanced covariates for plotting
-    if len(love_df_filtered) > max_covariates:
-        love_df_plot = love_df_filtered.tail(max_covariates)
+    # Sort by Group then Order
+    cov_df = cov_df.sort_values(["Group", "Order", "abs_before"], ascending=[True, True, True])
+
+    # Limit to max_covariates (on covariate rows only, no headers yet)
+    if len(cov_df) > max_covariates:
+        # Keep the rows with the largest abs_before overall
+        keep_idx = cov_df["abs_before"].nlargest(max_covariates).index
+        cov_df_plot = cov_df.loc[keep_idx].copy()
+        # Re-sort after subsetting
+        cov_df_plot = cov_df_plot.sort_values(["Group", "Order", "abs_before"], ascending=[True, True, True])
     else:
-        love_df_plot = love_df_filtered
+        cov_df_plot = cov_df.copy()
 
-    # Layout: plot on left, metrics on right
-    col_plot, col_metrics = st.columns([2, 1])
-
-    with col_plot:
-        st.subheader("Love plot")
-        if love_df_plot.empty:
-            st.warning("No covariates with non-missing SMDs to plot after filtering.")
-        else:
-            fig = make_love_plot(
-                love_df_plot,
-                before_col=before_col,
-                after_col=after_col,
-                before_label=before_label,
-                after_label=after_label,
-                threshold=threshold,
-                before_color=before_color,
-                after_color=after_color,
-                x_min=x_min,
-                x_max=x_max,
+    # Build plotting dataframe with group headers
+    rows = []
+    for group_value, group_df in cov_df_plot.groupby("Group", sort=False):
+        group_value = group_value.strip()
+        if group_value != "":
+            # Add a header row for this group (bold label, no SMD values)
+            rows.append(
+                {
+                    "label": group_value,
+                    before_col: np.nan,
+                    after_col: np.nan,
+                    "abs_before": np.nan,
+                    "abs_after": np.nan,
+                    "is_header": True,
+                }
             )
-            st.pyplot(fig)
 
-            # Downloadable PNG
+        for _, row in group_df.iterrows():
+            rows.append(
+                {
+                    "label": row["label"],
+                    before_col: row[before_col],
+                    after_col: row[after_col],
+                    "abs_before": row["abs_before"],
+                    "abs_after": row["abs_after"],
+                    "is_header": False,
+                }
+            )
+
+    plot_df = pd.DataFrame(rows)
+
+    # ----------------- Plot ----------------- #
+    st.subheader("Love plot")
+
+    if plot_df.empty:
+        st.warning("No covariates with non-missing SMDs to plot after filtering.")
+        fig = None
+    else:
+        fig = make_love_plot(
+            plot_df,
+            before_col=before_col,
+            after_col=after_col,
+            before_label=before_label,
+            after_label=after_label,
+            threshold=threshold,
+            before_color=before_color,
+            after_color=after_color,
+            x_min=x_min,
+            x_max=x_max,
+        )
+        st.pyplot(fig)
+
+        if fig is not None:
             buf = BytesIO()
             fig.savefig(buf, format="png", bbox_inches="tight")
             buf.seek(0)
@@ -432,26 +507,28 @@ def main():
                 mime="image/png",
             )
 
-    with col_metrics:
-        st.subheader("Balance metrics")
-        metrics = compute_love_metrics(
-            love_df_filtered,
-            before_col=before_col,
-            after_col=after_col,
-            threshold=threshold,
-        )
-        metrics_df = pd.DataFrame(metrics).T
-        st.dataframe(metrics_df.style.format(precision=3))
+    # ----------------- Balance metrics (below the plot) ----------------- #
+    st.subheader("Balance metrics")
 
-        # Download SMD table (for included covariates only)
-        smd_table = love_df_filtered[["label", before_col, after_col, "abs_before", "abs_after"]]
-        csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download SMD table (CSV)",
-            data=csv_bytes,
-            file_name="smd_table.csv",
-            mime="text/csv",
-        )
+    # Metrics should be computed on covariate rows only (no headers), using included rows
+    metrics = compute_love_metrics(
+        cov_df,
+        before_col=before_col,
+        after_col=after_col,
+        threshold=threshold,
+    )
+    metrics_df = pd.DataFrame(metrics).T
+    st.dataframe(metrics_df.style.format(precision=3))
+
+    # Download SMD table (included covariates only, no headers)
+    smd_table = cov_df[["Group", "Order", "label", before_col, after_col, "abs_before", "abs_after"]]
+    csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download SMD table (CSV)",
+        data=csv_bytes,
+        file_name="smd_table.csv",
+        mime="text/csv",
+    )
 
     # Optional: raw baseline table
     with st.expander("Show raw baseline table from TriNetX"):
