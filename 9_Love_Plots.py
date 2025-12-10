@@ -1,5 +1,9 @@
 """
-TriNetX Love Plot Generator (with drag-and-drop ordering, grouping, and safe legend layout)
+TriNetX Love Plot Generator
+- Drag-and-drop ordering
+- Custom grouping header rows
+- Legend outside plot, no overlap
+- Manual X-axis, color controls, metrics
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -98,7 +102,7 @@ def prepare_love_data(
             df["label"],
         )
 
-    # Numeric SMDs + absolute values (for sorting)
+    # Numeric SMDs + absolute values
     df[before_col] = pd.to_numeric(df[before_col], errors="coerce")
     df[after_col] = pd.to_numeric(df[after_col], errors="coerce")
 
@@ -106,8 +110,6 @@ def prepare_love_data(
     df["abs_after"] = df[after_col].abs()
 
     love_df = df[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
-
-    # Initial sort by imbalance; you can override via drag-and-drop later
     love_df = love_df.sort_values("abs_before", ascending=True).reset_index(drop=True)
 
     return love_df
@@ -123,6 +125,7 @@ def compute_love_metrics(
 ) -> dict:
     """
     Compute summary balance metrics for 'before' and 'after' SMDs.
+    Header rows (is_header=True) should be excluded before calling this.
     """
     out = {}
     for label, col in [("Before", before_col), ("After", after_col)]:
@@ -236,14 +239,13 @@ def make_love_plot(
             text.set_fontweight("bold")
 
     ax.set_xlabel("Standardized mean difference")
-    # No title (per your earlier request)
+    # No title by design
 
     # Legend controls: always outside, with space carved out
     if show_legend:
         box = ax.get_position()
 
         if legend_position == "Right outside":
-            # Shrink axes width to leave room on the right
             ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])
             leg = ax.legend(
                 loc="center left",
@@ -251,7 +253,6 @@ def make_love_plot(
                 borderaxespad=0.0,
             )
         elif legend_position == "Left outside":
-            # Move axes to the right to leave room on the left
             ax.set_position([box.x0 + box.width * 0.22, box.y0, box.width * 0.78, box.height])
             leg = ax.legend(
                 loc="center right",
@@ -259,7 +260,6 @@ def make_love_plot(
                 borderaxespad=0.0,
             )
         elif legend_position == "Top outside":
-            # Shrink axes height to leave room at the top
             ax.set_position([box.x0, box.y0, box.width, box.height * 0.82])
             leg = ax.legend(
                 loc="lower center",
@@ -267,7 +267,6 @@ def make_love_plot(
                 borderaxespad=0.5,
             )
         elif legend_position == "Bottom outside":
-            # Move axes up to leave room at the bottom
             ax.set_position([box.x0, box.y0 + box.height * 0.18, box.width, box.height * 0.82])
             leg = ax.legend(
                 loc="upper center",
@@ -275,7 +274,7 @@ def make_love_plot(
                 borderaxespad=0.5,
             )
         else:
-            # Fallback: treat as right outside
+            # Fallback: right outside
             ax.set_position([box.x0, box.y0, box.width * 0.78, box.height])
             leg = ax.legend(
                 loc="center left",
@@ -286,7 +285,6 @@ def make_love_plot(
         for txt in leg.get_texts():
             txt.set_fontsize(legend_fontsize)
     else:
-        # When no legend, you can safely tighten layout
         fig.tight_layout()
 
     ax.invert_yaxis()  # largest imbalance at top
@@ -422,7 +420,7 @@ def main():
         step=0.5,
     )
 
-    # Prepare data for Love plot
+    # Prepare base data for covariates
     love_df_full = prepare_love_data(
         df,
         before_col=before_col,
@@ -430,30 +428,66 @@ def main():
         include_categories=include_categories,
     )
 
-    # ----------------- Covariate editor (drag / group / rename / include) ----------------- #
+    # ----------------- Covariate editor state ----------------- #
+    base_edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
+    base_edit_df.insert(0, "Include", True)
+    base_edit_df.insert(1, "Group", "")       # optional metadata
+    base_edit_df.insert(2, "is_header", False)  # grouping header flag
+
+    # Initialize / reset when new file is uploaded
+    if (
+        "edit_cov_df" not in st.session_state
+        or st.session_state.get("_current_file_name") != uploaded_file.name
+    ):
+        st.session_state["_current_file_name"] = uploaded_file.name
+        st.session_state["edit_cov_df"] = base_edit_df.copy()
+
+    # Allow user to add header (grouping) rows
     st.subheader("Covariates")
 
     st.markdown(
         "Use the table below to **drag and drop rows** to reorder covariates, "
-        "assign them to **groups** (e.g., Demographics, Labs, Medications), "
-        "rename labels, and include/exclude rows."
+        "assign them to **groups** (optional metadata), mark **header rows** "
+        "(`is_header`), rename labels, and include/exclude rows."
     )
 
-    edit_df = love_df_full[["label", before_col, after_col, "abs_before", "abs_after"]].copy()
+    with st.expander("Add custom grouping header row", expanded=False):
+        new_header_label = st.text_input(
+            "Header label (e.g., Demographics, Labs, Medications)",
+            value="",
+            key="new_header_label",
+        )
+        if st.button("Add header row"):
+            label = new_header_label.strip()
+            if label:
+                df_current = st.session_state["edit_cov_df"]
+                new_row = {
+                    "Include": True,
+                    "Group": "",
+                    "is_header": True,
+                    "label": label,
+                    before_col: np.nan,
+                    after_col: np.nan,
+                    "abs_before": np.nan,
+                    "abs_after": np.nan,
+                }
+                st.session_state["edit_cov_df"] = pd.concat(
+                    [df_current, pd.DataFrame([new_row])],
+                    ignore_index=True,
+                )
+                st.experimental_rerun()
 
-    # Add control columns
-    edit_df.insert(0, "Include", True)
-    edit_df.insert(1, "Group", "")  # e.g., Demographics, Labs, Medications
+    edit_df = st.session_state["edit_cov_df"]
 
     with st.expander("Edit covariate table (drag rows to reorder)", expanded=False):
         gb = GridOptionsBuilder.from_dataframe(edit_df)
 
-        # default columns editable/resizable
         gb.configure_default_column(editable=True, resizable=True)
 
-        # Specific columns
         gb.configure_column("Include", headerCheckboxSelection=False)
         gb.configure_column("Group")
+        gb.configure_column("is_header", headerName="Header row")
+
         # Enable row drag on the label column
         gb.configure_column("label", rowDrag=True)
 
@@ -462,7 +496,6 @@ def main():
             gb.configure_column(col, editable=False)
 
         grid_options = gb.build()
-        # Managed row drag so order changes when you drop
         grid_options["rowDragManaged"] = True
         grid_options["rowDragEntireRow"] = True
         grid_options["rowDragMultiRow"] = True
@@ -479,60 +512,38 @@ def main():
     edited_df = grid_response["data"]
     if not isinstance(edited_df, pd.DataFrame):
         edited_df = pd.DataFrame(edited_df)
-
     edited_df = edited_df.reset_index(drop=True)
 
-    # Filter to included covariates
-    if "Include" in edited_df.columns:
-        cov_df = edited_df[edited_df["Include"]].copy()
-    else:
-        cov_df = edited_df.copy()
+    # Persist back to session_state
+    st.session_state["edit_cov_df"] = edited_df
 
-    # Recompute absolute SMDs in case anything changed
+    # Filter to included rows
+    cov_df = edited_df[edited_df["Include"]].copy()
+
+    # Ensure types
+    cov_df["is_header"] = cov_df["is_header"].fillna(False).astype(bool)
+    cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
     cov_df[before_col] = pd.to_numeric(cov_df[before_col], errors="coerce")
     cov_df[after_col] = pd.to_numeric(cov_df[after_col], errors="coerce")
     cov_df["abs_before"] = cov_df[before_col].abs()
     cov_df["abs_after"] = cov_df[after_col].abs()
 
-    cov_df["Group"] = cov_df["Group"].fillna("").astype(str)
+    # Apply max_covariates limit only to data rows (non-headers), preserve order
+    data_rows = cov_df[~cov_df["is_header"]].copy()
+    header_rows = cov_df[cov_df["is_header"]].copy()
 
-    # Limit to max_covariates based on biggest imbalance, but preserve current row order
-    if len(cov_df) > max_covariates:
-        keep_idx = cov_df["abs_before"].nlargest(max_covariates).index
-        cov_df_plot = cov_df.loc[keep_idx].sort_index()
-    else:
-        cov_df_plot = cov_df.copy()
+    if len(data_rows) > max_covariates:
+        keep_data_idx = data_rows["abs_before"].nlargest(max_covariates).index
+        data_rows = data_rows.loc[keep_data_idx].sort_index()
 
-    # Build plotting dataframe with group headers (based on current order)
-    rows = []
-    prev_group = None
-    for _, row in cov_df_plot.iterrows():
-        group_value = row["Group"].strip()
-        if group_value != "" and group_value != prev_group:
-            rows.append(
-                {
-                    "label": group_value,
-                    before_col: np.nan,
-                    after_col: np.nan,
-                    "abs_before": np.nan,
-                    "abs_after": np.nan,
-                    "is_header": True,
-                }
-            )
-            prev_group = group_value
+    # Recombine headers + data in original order
+    combined_df = pd.concat([header_rows, data_rows], axis=0)
+    combined_df = combined_df.sort_index()
+    cov_df_plot = combined_df.copy()
 
-        rows.append(
-            {
-                "label": row["label"],
-                before_col: row[before_col],
-                after_col: row[after_col],
-                "abs_before": row["abs_before"],
-                "abs_after": row["abs_after"],
-                "is_header": False,
-            }
-        )
-
-    plot_df = pd.DataFrame(rows)
+    # Build plotting dataframe directly from cov_df_plot:
+    # header rows (is_header=True) become bold labels with no points
+    plot_df = cov_df_plot[["label", before_col, after_col, "abs_before", "abs_after", "is_header"]].copy()
 
     # ----------------- Plot ----------------- #
     st.subheader("Love plot")
@@ -572,8 +583,10 @@ def main():
     # ----------------- Balance metrics (below the plot) ----------------- #
     st.subheader("Balance metrics")
 
+    # Metrics only on non-header rows
+    metric_df = cov_df[~cov_df["is_header"]].copy()
     metrics = compute_love_metrics(
-        cov_df,
+        metric_df,
         before_col=before_col,
         after_col=after_col,
         threshold=threshold,
@@ -581,8 +594,8 @@ def main():
     metrics_df = pd.DataFrame(metrics).T
     st.dataframe(metrics_df.style.format(precision=3))
 
-    # Download SMD table (included covariates only, with Group and current order)
-    smd_table = cov_df[["Group", "label", before_col, after_col, "abs_before", "abs_after"]].reset_index(drop=True)
+    # Download SMD table (included covariates only, with Group & header flag)
+    smd_table = cov_df[["Group", "is_header", "label", before_col, after_col, "abs_before", "abs_after"]].reset_index(drop=True)
     csv_bytes = smd_table.to_csv(index=False).encode("utf-8")
     st.download_button(
         "Download SMD table (CSV)",
