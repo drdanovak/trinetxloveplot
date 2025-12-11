@@ -851,10 +851,8 @@ def main():
                 f"""
 **Sample retention & matching ratio**
 
-- Cohort 1: {sample_info['N1_before']:,} → {sample_info['N1_after']:,} """
-                f"({sample_info['retain1'] * 100:.1f}% retained)  
-- Cohort 2: {sample_info['N2_before']:,} → {sample_info['N2_after']:,} """
-                f"({sample_info['retain2'] * 100:.1f}% retained)  
+- Cohort 1: {sample_info['N1_before']:,} → {sample_info['N1_after']:,} ({sample_info['retain1'] * 100:.1f}% retained)  
+- Cohort 2: {sample_info['N2_before']:,} → {sample_info['N2_after']:,} ({sample_info['retain2'] * 100:.1f}% retained)  
 - Overall retention: {sample_info['retain_overall'] * 100:.1f}%  
 - Matched sample ratio (Cohort 1 / Cohort 2): {sample_info['ratio_after']:.2f}
 """
