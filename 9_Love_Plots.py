@@ -4,6 +4,7 @@ TriNetX Love Plot Generator
 - Custom grouping header rows
 - Legend outside plot, no overlap
 - Manual X-axis, color & figure controls, metrics, narrative, histograms
+- Additional PSM diagnostics: sample retention, variance ratios, group-level balance
 
 Usage:
     streamlit run 9_Love_Plots.py
@@ -146,6 +147,163 @@ def compute_love_metrics(
         }
 
     return out
+
+
+def compute_sample_retention_from_baseline(df: pd.DataFrame):
+    """
+    Compute sample retention and matching ratio from the baseline table.
+
+    Uses max patient counts across rows as an approximation of the full cohort
+    sizes before/after matching.
+    """
+    cols = [
+        "Cohort 1 Before: Patient Count",
+        "Cohort 2 Before: Patient Count",
+        "Cohort 1 After: Patient Count",
+        "Cohort 2 After: Patient Count",
+    ]
+    for c in cols:
+        if c not in df.columns:
+            return None
+
+    n1b = pd.to_numeric(df["Cohort 1 Before: Patient Count"], errors="coerce").max()
+    n2b = pd.to_numeric(df["Cohort 2 Before: Patient Count"], errors="coerce").max()
+    n1a = pd.to_numeric(df["Cohort 1 After: Patient Count"], errors="coerce").max()
+    n2a = pd.to_numeric(df["Cohort 2 After: Patient Count"], errors="coerce").max()
+
+    if any(pd.isna(x) for x in [n1b, n2b, n1a, n2a]) or (n1b == 0) or (n2b == 0) or (n1a == 0) or (n2a == 0):
+        return None
+
+    retain1 = n1a / n1b
+    retain2 = n2a / n2b
+    overall_before = n1b + n2b
+    overall_after = n1a + n2a
+    retain_overall = overall_after / overall_before if overall_before > 0 else None
+    ratio_after = n1a / n2a if n2a > 0 else None
+
+    return {
+        "N1_before": int(n1b),
+        "N2_before": int(n2b),
+        "N1_after": int(n1a),
+        "N2_after": int(n2a),
+        "retain1": retain1,
+        "retain2": retain2,
+        "retain_overall": retain_overall,
+        "ratio_after": ratio_after,
+    }
+
+
+def compute_variance_ratio_metrics(df: pd.DataFrame):
+    """
+    Compute variance ratio diagnostics for continuous covariates.
+
+    VR_before = var1_before / var2_before
+    VR_after  = var1_after  / var2_after
+
+    Reports:
+    - N continuous covariates
+    - mean |VR-1| before/after
+    - max VR before/after
+    - counts outside [0.5, 2.0] before/after
+    """
+    needed = [
+        "Cohort 1 Before: SD",
+        "Cohort 2 Before: SD",
+        "Cohort 1 After: SD",
+        "Cohort 2 After: SD",
+    ]
+    for c in needed:
+        if c not in df.columns:
+            return None
+
+    tmp = df.copy()
+    for c in needed:
+        tmp[c] = pd.to_numeric(tmp[c], errors="coerce")
+
+    mask = (
+        tmp["Cohort 1 Before: SD"].notna()
+        & tmp["Cohort 2 Before: SD"].notna()
+        & tmp["Cohort 1 After: SD"].notna()
+        & tmp["Cohort 2 After: SD"].notna()
+    )
+    cont = tmp.loc[mask].copy()
+    if cont.empty:
+        return None
+
+    var1b = cont["Cohort 1 Before: SD"] ** 2
+    var2b = cont["Cohort 2 Before: SD"] ** 2
+    var1a = cont["Cohort 1 After: SD"] ** 2
+    var2a = cont["Cohort 2 After: SD"] ** 2
+
+    vr_before = var1b / var2b
+    vr_after = var1a / var2a
+
+    lower, upper = 0.5, 2.0
+    outside_before = ((vr_before < lower) | (vr_before > upper))
+    outside_after = ((vr_after < lower) | (vr_after > upper))
+
+    return {
+        "N_continuous": int(len(cont)),
+        "Mean_abs_VR_minus_1_before": float(np.abs(vr_before - 1).mean()),
+        "Mean_abs_VR_minus_1_after": float(np.abs(vr_after - 1).mean()),
+        "Max_VR_before": float(vr_before.max()),
+        "Max_VR_after": float(vr_after.max()),
+        "N_outside_range_before": int(outside_before.sum()),
+        "N_outside_range_after": int(outside_after.sum()),
+        "range_lower": lower,
+        "range_upper": upper,
+    }
+
+
+def compute_group_balance_metrics(
+    metric_df: pd.DataFrame,
+    before_col: str,
+    after_col: str,
+    threshold: float,
+):
+    """
+    Compute group-level balance metrics based on the user-defined 'Group' column.
+
+    Expects metric_df to be covariate rows only (no header rows).
+    """
+    if metric_df is None or metric_df.empty:
+        return None
+
+    df = metric_df.copy()
+
+    if "Group" not in df.columns:
+        df["Group"] = ""
+
+    df["Group_display"] = df["Group"].replace("", "Ungrouped").fillna("Ungrouped")
+    df[before_col] = pd.to_numeric(df[before_col], errors="coerce")
+    df[after_col] = pd.to_numeric(df[after_col], errors="coerce")
+    df["abs_before"] = df[before_col].abs()
+    df["abs_after"] = df[after_col].abs()
+
+    records = []
+    for grp, g in df.groupby("Group_display"):
+        s_before = g["abs_before"].dropna()
+        s_after = g["abs_after"].dropna()
+        if s_before.empty and s_after.empty:
+            continue
+
+        n = max(len(s_before), len(s_after))
+        rec = {
+            "Group": grp,
+            "N covariates": n,
+            "Mean |SMD| Before": float(s_before.mean()) if len(s_before) > 0 else float("nan"),
+            "Mean |SMD| After": float(s_after.mean()) if len(s_after) > 0 else float("nan"),
+            f"% > {threshold:.2f} Before": float((s_before > threshold).mean() * 100) if len(s_before) > 0 else float("nan"),
+            f"% > {threshold:.2f} After": float((s_after > threshold).mean() * 100) if len(s_after) > 0 else float("nan"),
+        }
+        records.append(rec)
+
+    if not records:
+        return None
+
+    group_df = pd.DataFrame(records)
+    group_df = group_df.sort_values("Group")
+    return group_df
 
 
 def make_love_plot(
@@ -645,7 +803,7 @@ def main():
                 mime="image/png",
             )
 
-    # ----------------- Balance metrics & summary ----------------- #
+    # ----------------- Balance metrics, summary, and diagnostics ----------------- #
     st.subheader("Balance metrics")
 
     metric_df = cov_df[~cov_df["is_header"]].copy()
@@ -658,7 +816,7 @@ def main():
     metrics_df = pd.DataFrame(metrics).T
     st.dataframe(metrics_df.style.format(precision=3))
 
-    # Narrative summary
+    # Narrative summary + additional diagnostics directly below the Love plot
     if not metric_df.empty:
         before_stats = metrics.get("Before", {})
         after_stats = metrics.get("After", {})
@@ -685,6 +843,49 @@ def main():
             summary_text += f" This corresponds to a **{reduction:.1f}%** reduction in mean imbalance."
 
         st.markdown(summary_text)
+
+        # Sample retention & matching ratio
+        sample_info = compute_sample_retention_from_baseline(df)
+        if sample_info is not None:
+            st.markdown(
+                f"""
+**Sample retention & matching ratio**
+
+- Cohort 1: {sample_info['N1_before']:,} → {sample_info['N1_after']:,} """
+                f"({sample_info['retain1'] * 100:.1f}% retained)  
+- Cohort 2: {sample_info['N2_before']:,} → {sample_info['N2_after']:,} """
+                f"({sample_info['retain2'] * 100:.1f}% retained)  
+- Overall retention: {sample_info['retain_overall'] * 100:.1f}%  
+- Matched sample ratio (Cohort 1 / Cohort 2): {sample_info['ratio_after']:.2f}
+"""
+            )
+
+        # Continuous covariate variance ratios
+        vr_info = compute_variance_ratio_metrics(df)
+        if vr_info is not None:
+            st.markdown(
+                f"""
+**Continuous covariate variance ratios**
+
+- Continuous covariates with SD data: {vr_info['N_continuous']}  
+- Mean |VR − 1|: before {vr_info['Mean_abs_VR_minus_1_before']:.3f}, after {vr_info['Mean_abs_VR_minus_1_after']:.3f}  
+- Max variance ratio: before {vr_info['Max_VR_before']:.2f}, after {vr_info['Max_VR_after']:.2f}  
+- VR outside [{vr_info['range_lower']:.1f}, {vr_info['range_upper']:.1f}]:  
+  - Before: {vr_info['N_outside_range_before']} / {vr_info['N_continuous']}  
+  - After: {vr_info['N_outside_range_after']} / {vr_info['N_continuous']}
+"""
+            )
+
+        # Group-level balance summary
+        group_metrics_df = compute_group_balance_metrics(
+            metric_df,
+            before_col=before_col,
+            after_col=after_col,
+            threshold=threshold,
+        )
+        if group_metrics_df is not None and not group_metrics_df.empty:
+            with st.expander("Group-level balance by 'Group' label", expanded=False):
+                st.dataframe(group_metrics_df.style.format(precision=3))
 
         # Histogram of |SMD| before vs after
         if metric_df[before_col].notna().any() or metric_df[after_col].notna().any():
